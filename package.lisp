@@ -11,7 +11,6 @@
    #:elements-by-key
    #:delete-by-key
    #:upsert-item
-   #:data-struct
    #:dump-json))
 
 (in-package #:dyna-clc)

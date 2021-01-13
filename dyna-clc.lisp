@@ -146,15 +146,29 @@ and turns it back to the original type-prefixed-format. This is necessary for up
    #'convert-to-dynamo-entity
    somewhat-convenient-alist))
 
+;; TODO: how to tell "S" from "B"? Need to revisit convert-dynamo-entity
 (defun convert-to-dynamo-entity (item)
   "Check ITEM to determine its \"Dynamo type\", and return a version prefixed the S, B, M, etc.
 that can be JSON-serialized in a way that makes the AWS CLI happy."
-  (if (listp item)
-      (convert-to-dynamo-entity (cdr item))
-      )
-  )
+  (let* ((name (car item))
+	 (value (cdr item))
+	 (converted (cond
+		      ((stringp value) (cons "S" value))
+		      ((numberp value) (cons "N" (write-to-string value)))
+		      ((or (eq 't value) (eq :false value)) (cons "BOOL" value))
+		      ((dynamo-map-p value) (cons "M" (mapcar #'convert-to-dynamo-entity value)))
+		      ((dynamo-list-p value) (cons "L" (convert-item-to-dynamo value))))))
+    (cons name converted)))
 
-(defun is-map (elem)
-  "Determines if ELEM should represent a plain JSON object."
 
-  )
+(defun dynamo-map-p (elem)
+  "Determines if ELEM should represent a plain JSON object.
+If all the CARs of ELEM are strings, then we understand they all denote attribute names in a
+JSON object."
+  (every #'stringp (mapcar #'car elem)))
+
+;;
+(defun dynamo-list-p (elem)
+  "Determines if ELEM should represent a JSON array.
+If all the CARs of ELEM are CONSP, then we understand it is a list with more sub-items."
+  (every #'consp (mapcar #'car elem)))

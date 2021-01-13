@@ -100,6 +100,17 @@ a (hopefully) Lispier format, that is also more readable in the REPL."
      (gethash "Items"
               (jonathan:parse aws-json :as :hash-table)))))
 
+(defun test-func ()
+  (let ((jonathan:*null-value* :null)
+        (jonathan:*false-value* :false)
+        (jonathan:*empty-array-value* :[])
+	(raw-output (dynamo-operation "scan"
+				      "Dev_ME_PlaybackContent"
+				      nil
+				      "devdb")))
+    (jonathan:parse raw-output :as :alist)))
+
+
 (defun parse-single-item (item)
   "Parses the contents of the ITEM hash-table to unravel its contents as errrr...plainer objects.
 For each element in the table, it is converted to a cons cell ( StringKey . ParsedValue ).
@@ -150,16 +161,19 @@ and turns it back to the original type-prefixed-format. This is necessary for up
 (defun convert-to-dynamo-entity (item)
   "Check ITEM to determine its \"Dynamo type\", and return a version prefixed the S, B, M, etc.
 that can be JSON-serialized in a way that makes the AWS CLI happy."
-  (let* ((name (car item))
-	 (value (cdr item))
-	 (converted (cond
+  (destructuring-bind (name . value) item
+	 (let ((converted (cond
 		      ((stringp value) (cons "S" value))
 		      ((numberp value) (cons "N" (write-to-string value)))
 		      ((or (eq 't value) (eq :false value)) (cons "BOOL" value))
 		      ((dynamo-map-p value) (cons "M" (mapcar #'convert-to-dynamo-entity value)))
-		      ((dynamo-list-p value) (cons "L" (convert-item-to-dynamo value))))))
-    (cons name converted)))
-
+		      ((dynamo-list-p value) (cons "L" (convert-item-to-dynamo value)))
+		      )))
+	   ;; (when (and (stringp name) (string= name "ContentId"))
+	   ;;   (format *standard-output* "~a . ~a => ~a " name value converted))
+	   ;; ;; (when (and (stringp name) (string= name "versions"))
+	   ;; ;;   (format *standard-output* "~a . ~a => ~a ~a" name value)
+	   (list name converted))))
 
 (defun dynamo-map-p (elem)
   "Determines if ELEM should represent a plain JSON object.
@@ -167,8 +181,7 @@ If all the CARs of ELEM are strings, then we understand they all denote attribut
 JSON object."
   (every #'stringp (mapcar #'car elem)))
 
-;;
 (defun dynamo-list-p (elem)
   "Determines if ELEM should represent a JSON array.
 If all the CARs of ELEM are CONSP, then we understand it is a list with more sub-items."
-  (every #'consp (mapcar #'car elem)))
+    (every #'consp (mapcar #'car elem)))

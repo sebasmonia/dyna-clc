@@ -10,7 +10,11 @@
    #:scan-table
    #:elements-by-key
    #:delete-by-key
+   #:delete-by-key
    #:upsert-item
-   #:dump-json))
+   #:val
+   #:extract
+   #:filter-val
+   #:filter-vals))
 
 (in-package #:dyna-clc)

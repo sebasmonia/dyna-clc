@@ -54,134 +54,79 @@ See the DYNAMO-OPERATION docs for notes on the PROFILE parameter."
                                   key-value))
                     profile))
 
-;; TODO: check if DELETE-BY-KEYS can be used instead of DELETE-BY-KEY.
-;; TODO: check if the same parameter mechanism in this function can be used for ELEMENTS-BY-KEY.
-(defun delete-by-keys (table-name key-value-alist profile)
-  "Delete the item in TABLE-NAME that matches specified KEY-VALUE-ALIST with the format
-(keyName . keyValue). This function works only for tables with a SortKey, else use DELETE-BY-KEY
-instead.
+(defun delete-by-keys (table-name key-type-value-alist profile)
+  "Delete the item in TABLE-NAME that matches specified KEY-TYPE-VALUE-ALIST with the format
+(keyName (type. keyValue). This function works for tables with a SortKey, if there is a single
+key then DELETE-BY-KEY is easier to use.
 See the DYNAMO-OPERATION docs for notes on the PROFILE parameter."
-  (let ((key-value-formatted (loop for (key . value) in key-value-alist
-                                   collecting (format nil "{\"~a\":{\"S\": \"~a\"}}" key value))))
-    (dynamo-operation "delete-item"
-                    table-name
-                    (apply #'concatenate
-                           'string
-                           key-value-formatted)
-                    profile)))
+  (dynamo-operation "delete-item"
+		    table-name
+		    (list "--key"
+			  (jonathan:to-json key-type-value-alist :from :alist))
+                    profile))
 
 (defun upsert-item (table-name item-data profile)
   "Upsert an item in TABLE-NAME using ITEM-DATA. If the PartitionKey (and optionally SortKey)
 in ITEM-DATA matches an existing element, it will be updated, else you get a new element.
 See the DYNAMO-OPERATION docs for notes on the PROFILE parameter."
-  (let ((dynamo-formatted (convert-item-to-dynamo item-data)))
-    (uiop:with-temporary-file (:stream tmp-stream :pathname tmp-pathname)
-      (write-string (jonathan:to-json dynamo-formatted :from :alist) tmp-stream)
-      :close-stream
-      (dynamo-operation "put-item"
-                        table-name
-                        (list "--item"
-                              (concatenate 'string
-                                           "file://"
-                                           (uiop:native-namestring tmp-pathname)))
-                        profile))))
-
-(defun dump-json ()
-)
-
-(defun parse-items-list (aws-json)
-  "Use JONATHAN:PARSE to convert the JSON-representation of Dynamo items returned by the AWS CLI to
-a (hopefully) Lispier format, that is also more readable in the REPL."
   (let ((jonathan:*null-value* :null)
         (jonathan:*false-value* :false)
         (jonathan:*empty-array-value* :[]))
-    (mapcar
-     #'parse-single-item
-     (gethash "Items"
-              (jonathan:parse aws-json :as :hash-table)))))
+    (uiop:with-temporary-file (:stream tmp-stream :pathname tmp-pathname)
+      (write-string (jonathan:to-json item-data :from :alist) tmp-stream)
+      :close-stream
+      (dynamo-operation "put-item"
+			table-name
+			(list "--item"
+			      (concatenate 'string
+					   "file://"
+					   (uiop:native-namestring tmp-pathname)))
+			profile))))
 
-(defun test-func ()
+(defun parse-items-list (aws-json)
+  "Use JONATHAN:PARSE to convert the JSON-representation of Dynamo items returned by the AWS CLI to
+a bunch of alists, which are a bit more readable in the REPL."
   (let ((jonathan:*null-value* :null)
-        (jonathan:*false-value* :false)
-        (jonathan:*empty-array-value* :[])
-	(raw-output (dynamo-operation "scan"
-				      "Dev_ME_PlaybackContent"
-				      nil
-				      "devdb")))
-    (jonathan:parse raw-output :as :alist)))
+        (jonathan:*false-value* :false))
+    (alexandria:assoc-value
+     (jonathan:parse aws-json :as :alist)
+     "Items"
+     :test #'equal)))
 
+(defun (setf val) (new-value data key)
+  "Return the value of KEY from DATA as provided by dyna-clc.
+A second return value indicates the AWS type definition, for example \"1234\" will be
+a string literal if this value is \"S\", or a number if it's \"N\"."
+  (let ((found (second (assoc key data :test #'equal))))
+    (when found
+      (values (setf (cdr found) new-value)
+	      (car found)))))
 
-(defun parse-single-item (item)
-  "Parses the contents of the ITEM hash-table to unravel its contents as errrr...plainer objects.
-For each element in the table, it is converted to a cons cell ( StringKey . ParsedValue ).
-See CONVERT-DYNAMO-ENTITY for details on the individual type conversions."
-  (loop for k being the hash-keys in item using (hash-value v)
-	collect (cons k
-		      (convert-dynamo-entity v))))
+(defun extract (data &rest keys)
+  "Collect the output DYNA-CLC:VAL for key in KEYS on each item in DATA."
+  (loop for element in data
+	collect (mapcar (lambda (k) (val element k)) keys)))
 
-(defun convert-dynamo-entity (content)
-  "Identify the type of CONTENT and convert it to a Lisp object. \"M\"aps (JSON objects) get a
-second call to this same function. \"L\"ists (JS arrays) are handled with a subcall to
-PARSE-SINGLE-ITEM.
-Some values depend on jonathan's parsing parameters as bound in PARSE-ITEM-LIST (true/false, empty
-array)."
-  (let ((map-data (gethash "M" content))
-	(list-data (gethash "L" content))
-	(boolean-data (gethash "BOOL" content))
-	(string (gethash "S" content))
-	(binary (gethash "B" content))
-	(number (gethash "N" content))
-	(set-number (gethash "NS" content))
-	(set-data (or (gethash "SS" content)
-		      (gethash "BS" content))))
-    (cond (string string)
-	  (boolean-data (if (equal boolean-data "true")
-                            t
-                            :false))
-	  (binary binary)
-	  ;; this can be very bad, but I trust the Dynamo output...
-	  (number (read-from-string number))
-	  (set-number (mapcar #'read-from-string set-number))
-	  ;; return as-is
-	  (set-data set-data)
-          ;; if the list is empty, returns nil...which the empty list
-	  (list-data (unless (eq list-data :[])
-                       (mapcar #'convert-dynamo-entity list-data)))
-	  (map-data (parse-single-item map-data)))))
+(defun filter-val (data field value &key (contains nil))
+  "Get the items in DATA with FIELD matching VALUE. If :contains is nil (the default) look for exact matches,
+else so a substring search."
+  (remove-if-not
+   (lambda (elem)
+     (if contains
+	 (search value (val elem field))
+	 (equal (val elem field) value)))
+   data))
 
-
-(defun convert-item-to-dynamo (somewhat-convenient-alist)
-  "This function takes a SOMEWHAT-CONVENIENT-ALIST in the format returned by PARSE-SINGLE-ITEM
-and turns it back to the original type-prefixed-format. This is necessary for upsert operations."
-  (mapcar
-   #'convert-to-dynamo-entity
-   somewhat-convenient-alist))
-
-;; TODO: how to tell "S" from "B"? Need to revisit convert-dynamo-entity
-(defun convert-to-dynamo-entity (item)
-  "Check ITEM to determine its \"Dynamo type\", and return a version prefixed the S, B, M, etc.
-that can be JSON-serialized in a way that makes the AWS CLI happy."
-  (destructuring-bind (name . value) item
-	 (let ((converted (cond
-		      ((stringp value) (cons "S" value))
-		      ((numberp value) (cons "N" (write-to-string value)))
-		      ((or (eq 't value) (eq :false value)) (cons "BOOL" value))
-		      ((dynamo-map-p value) (cons "M" (mapcar #'convert-to-dynamo-entity value)))
-		      ((dynamo-list-p value) (cons "L" (convert-item-to-dynamo value)))
-		      )))
-	   ;; (when (and (stringp name) (string= name "ContentId"))
-	   ;;   (format *standard-output* "~a . ~a => ~a " name value converted))
-	   ;; ;; (when (and (stringp name) (string= name "versions"))
-	   ;; ;;   (format *standard-output* "~a . ~a => ~a ~a" name value)
-	   (list name converted))))
-
-(defun dynamo-map-p (elem)
-  "Determines if ELEM should represent a plain JSON object.
-If all the CARs of ELEM are strings, then we understand they all denote attribute names in a
-JSON object."
-  (every #'stringp (mapcar #'car elem)))
-
-(defun dynamo-list-p (elem)
-  "Determines if ELEM should represent a JSON array.
-If all the CARs of ELEM are CONSP, then we understand it is a list with more sub-items."
-    (every #'consp (mapcar #'car elem)))
+(defun filter-vals (data filters)
+  "Make successive calls to DYNA-CLC:FILTER-VAL applying each element in FILTERS.
+The expected format is a list of pairs (name value). If value contains a \"*\" character then make the call
+with :contains t. This means you can't use this to search for a literal \"*\". "
+  (if filters
+      (progn
+	(let ((current (car filters))
+	      (rest (cdr filters)))
+	  (destructuring-bind (field value) current
+	    (filter-vals
+	     (filter-val data field (remove #\* value) :contains (search "*" value))
+	     rest))))
+      data))

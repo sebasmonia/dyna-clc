@@ -93,6 +93,15 @@ a bunch of alists, which are a bit more readable in the REPL."
      "Items"
      :test #'equal)))
 
+(defun val (data key)
+  "Return the value of KEY from DATA as provided by dyna-clc.
+A second return value indicates the AWS type definition, for example \"1234\" will be
+a string literal if this value is \"S\", or a number if it's \"N\"."
+  (let ((found (second (assoc key data :test #'equal))))
+    (when found
+      (values (cdr found)
+	      (car found)))))
+
 (defun (setf val) (new-value data key)
   "Return the value of KEY from DATA as provided by dyna-clc.
 A second return value indicates the AWS type definition, for example \"1234\" will be
